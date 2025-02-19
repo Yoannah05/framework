@@ -8,8 +8,10 @@ import arch.annotation.GET;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Method;
+import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
 import java.util.*;
+
 public class FrontController extends HttpServlet {
 
     private Map<String, Mapping> urlMappings = new HashMap<>();  
@@ -23,7 +25,6 @@ public class FrontController extends HttpServlet {
         scanControllers();
     }
 
-    // Méthode pour scanner les contrôleurs et associer les méthodes GET à des URL
     private void scanControllers() {
         try {
             List<Class<?>> controllerClasses = getClasses(controllerPackage);
@@ -46,7 +47,6 @@ public class FrontController extends HttpServlet {
         }
     }
 
-    // Méthode pour obtenir les classes dans un package donné
     private List<Class<?>> getClasses(String packageName) throws ClassNotFoundException, IOException {
         List<Class<?>> classes = new ArrayList<>();
         ClassLoader classLoader = getClass().getClassLoader();
@@ -80,24 +80,38 @@ public class FrontController extends HttpServlet {
         processRequest(request, response);
     }
 
-    // Méthode pour traiter la requête et afficher le Mapping associé à l'URL
     protected void processRequest(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
         response.setContentType("text/html");
         response.getWriter().println("<html><body>");
         response.getWriter().println("<h1>URL Mapping:</h1>");
 
         String requestUrl = request.getPathInfo();
-
         Mapping mapping = urlMappings.get(requestUrl); 
 
         if (mapping != null) {
-            response.getWriter().println("<p>URL: " + requestUrl + "</p>");
-            response.getWriter().println("<p>Mapped to: " + mapping + "</p>");
+            try {
+                Class<?> controllerClass = Class.forName(mapping.getClassName());
+                Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
+                Method method = controllerClass.getDeclaredMethod(mapping.getMethodName());
+                if (method.getReturnType() != String.class) {
+                    throw new ServletException("La méthode doit retourner un String");
+                }
+                String result = (String) method.invoke(controllerInstance);
+                response.getWriter().println("<p>URL: " + requestUrl + "</p>");
+                response.getWriter().println("<p>Mapped to: " + mapping + "</p>");
+                response.getWriter().println("<p>Method result: " + result + "</p>");
+                
+            } catch (ClassNotFoundException e) {
+                response.getWriter().println("<p>Error: Controller class not found</p>");
+                e.printStackTrace();
+            } catch (NoSuchMethodException | IllegalAccessException | InstantiationException | InvocationTargetException e) {
+                response.getWriter().println("<p>Error: Could not execute controller method</p>");
+                e.printStackTrace();
+            }
         } else {
-            response.getWriter().println("<p>No method associated with this URL : </p>" + requestUrl);
+            response.getWriter().println("<p>No method associated with this URL: " + requestUrl + "</p>");
         }
-        response.getWriter().println("<p>"+test+"</p>");
-
+        
         response.getWriter().println("</body></html>");
     }
 }
