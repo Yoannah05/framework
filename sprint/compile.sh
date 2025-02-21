@@ -1,5 +1,4 @@
 #!/bin/bash
-
 CLASSES_DIR="bin"
 JAR_FILE="sprint.jar"
 
