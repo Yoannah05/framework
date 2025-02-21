@@ -4,9 +4,11 @@ import jakarta.servlet.*;
 import jakarta.servlet.http.*;
 import arch.annotation.Controller;
 import arch.annotation.GET;
+import arch.model.ModelView;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.lang.reflect.Method;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
@@ -14,9 +16,10 @@ import java.util.*;
 
 public class FrontController extends HttpServlet {
 
-    private Map<String, Mapping> urlMappings = new HashMap<>();  
+    private Map<String, Mapping> urlMappings = new HashMap<>();
     private String controllerPackage;
-    private int test = 0;
+    private static final String VIEW_PREFIX = "/WEB-INF/views/";
+    private static final String VIEW_SUFFIX = ".jsp";
 
     @Override
     public void init(ServletConfig config) throws ServletException {
@@ -36,9 +39,8 @@ public class FrontController extends HttpServlet {
                             GET getAnnotation = method.getAnnotation(GET.class);
                             String url = getAnnotation.value();
                             Mapping mapping = new Mapping(clazz.getName(), method.getName());
-                            urlMappings.put(url, mapping); 
+                            urlMappings.put(url, mapping);
                         }
-                        test++;
                     }
                 }
             }
@@ -71,47 +73,82 @@ public class FrontController extends HttpServlet {
     }
 
     @Override
-    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+    protected void doGet(HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
         processRequest(request, response);
     }
 
     @Override
-    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+    protected void doPost(HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
         processRequest(request, response);
     }
 
-    protected void processRequest(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+    protected void processRequest(HttpServletRequest request, HttpServletResponse response)
+        throws ServletException, IOException {
+
         response.setContentType("text/html");
-        response.getWriter().println("<html><body>");
-        response.getWriter().println("<h1>URL Mapping:</h1>");
+        PrintWriter out = response.getWriter();
 
-        String requestUrl = request.getPathInfo();
-        Mapping mapping = urlMappings.get(requestUrl); 
+        String requestURL = request.getPathInfo();
 
-        if (mapping != null) {
-            try {
-                Class<?> controllerClass = Class.forName(mapping.getClassName());
-                Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
-                Method method = controllerClass.getDeclaredMethod(mapping.getMethodName());
-                if (method.getReturnType() != String.class) {
-                    throw new ServletException("La méthode doit retourner un String");
-                }
-                String result = (String) method.invoke(controllerInstance);
-                response.getWriter().println("<p>URL: " + requestUrl + "</p>");
-                response.getWriter().println("<p>Mapped to: " + mapping + "</p>");
-                response.getWriter().println("<p>Method result: " + result + "</p>");
-                
-            } catch (ClassNotFoundException e) {
-                response.getWriter().println("<p>Error: Controller class not found</p>");
-                e.printStackTrace();
-            } catch (NoSuchMethodException | IllegalAccessException | InstantiationException | InvocationTargetException e) {
-                response.getWriter().println("<p>Error: Could not execute controller method</p>");
-                e.printStackTrace();
-            }
-        } else {
-            response.getWriter().println("<p>No method associated with this URL: " + requestUrl + "</p>");
+        if (requestURL == null || requestURL.equals("") || requestURL.equals("")) {
+            requestURL=request.getServletPath();
         }
-        
-        response.getWriter().println("</body></html>");
+
+        out.println("Request URL: " + requestURL); // Debug: print the request URL
+
+        Mapping mapping = urlMappings.get(requestURL);
+        if (mapping == null) {
+            out.println("No method associated with URL: " + requestURL);
+            out.println("Available mappings: " + urlMappings.keySet()); // Debug: print available mappings
+            return;
+        }
+
+        try {
+            String className = mapping.getClassName();
+            Class<?> clazz = Class.forName(className);
+            Object instance = clazz.getDeclaredConstructor().newInstance();
+            String methodName = mapping.getMethodName();
+            Method method = clazz.getDeclaredMethod(methodName);
+
+            Object result = method.invoke(instance);
+
+            if (result instanceof String) {
+                out.println("Result: " + result);
+            } else if (result instanceof ModelView) {
+                ModelView modelView = (ModelView) result;
+                String url = modelView.getUrl();
+                out.println("ModelView URL: " + url); // Debug: print the ModelView URL
+
+                // Ajouter chaque entrée du HashMap en tant que paramètre de la requête
+                for (Map.Entry<String, Object> entry : modelView.getData().entrySet()) {
+                    request.setAttribute(entry.getKey(), entry.getValue());
+                }
+
+                request.getRequestDispatcher(url).forward(request, response);
+            } else {
+                out.println("Unknown result type: " + result.getClass().getName());
+            }
+        } catch (ClassNotFoundException e) {
+            out.println("Class not found: " + mapping.getClassName());
+            e.printStackTrace(out); // Debug: print stack trace
+        } catch (NoSuchMethodException e) {
+            out.println("Method not found: " + mapping.getMethodName());
+            e.printStackTrace(out); // Debug: print stack trace
+        } catch (InstantiationException | IllegalAccessException | InvocationTargetException e) {
+            out.println("Error invoking method: " + e.getMessage());
+            e.printStackTrace(out); // Debug: print stack trace
+        } finally {
+            out.close();
+        }
+    }
+
+    private String resolveViewPath(String viewName) {
+        if (!viewName.endsWith(".jsp")) {
+            viewName += ".jsp";
+        }
+       
+        return VIEW_PREFIX + viewName;
     }
 }
