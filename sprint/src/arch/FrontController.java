@@ -9,6 +9,7 @@ import arch.exception.UrlMappingNotFoundException;
 import arch.handler.ResultHandler;
 import arch.registry.MappingRegistry;
 import arch.scanner.ControllerScanner;
+import arch.session.MySession;
 import jakarta.servlet.ServletConfig;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
@@ -18,7 +19,6 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 
@@ -80,14 +80,11 @@ public class FrontController extends HttpServlet {
         return requestURL;
     }
 
-    // FrontController.java - Méthode invokeHandler modifiée
     private Object invokeHandler(Mapping mapping, HttpServletRequest request) throws Exception {
         try {
-            // Chargement de la classe
             Class<?> clazz = Class.forName(mapping.getClassName());
             Object instance = clazz.getDeclaredConstructor().newInstance();
 
-            // Récupération de la méthode avec ses paramètres
             Method methodToFind = null;
             for (Method m : clazz.getDeclaredMethods()) {
                 if (m.getName().equals(mapping.getMethodName())) {
@@ -101,39 +98,36 @@ public class FrontController extends HttpServlet {
                         "Méthode " + mapping.getMethodName() + " non trouvée dans " + mapping.getClassName());
             }
 
-            // Récupération des paramètres de la méthode
             Parameter[] parameters = methodToFind.getParameters();
             Object[] args = new Object[parameters.length];
 
-            // Traitement des paramètres
             for (int i = 0; i < parameters.length; i++) {
                 Parameter param = parameters[i];
-                if (param.isAnnotationPresent(Param.class)) {
+                Class<?> paramType = param.getType();
+
+                if (paramType == MySession.class) {
+                    // Gestion de la session
+                    args[i] = new MySession(request.getSession());
+                } else if (param.isAnnotationPresent(Param.class)) {
                     // Paramètre simple avec @Param
                     Param annotation = param.getAnnotation(Param.class);
                     String paramName = annotation.name();
                     String paramValue = request.getParameter(paramName);
-                    args[i] = convertParameterValue(paramValue, param.getType());
+                    args[i] = convertParameterValue(paramValue, paramType);
                 } else if (param.isAnnotationPresent(RequestParam.class)) {
                     // Objet complexe avec @RequestParam
-                    args[i] = bindRequestParameters(param.getType(), request);
+                    args[i] = bindRequestParameters(paramType, request);
                 } else {
-                    // Si pas d'annotation, utiliser le nom du paramètre directement
+                    // Paramètre sans annotation
                     String paramName = param.getName();
                     String paramValue = request.getParameter(paramName);
-                    args[i] = convertParameterValue(paramValue, param.getType());
+                    args[i] = convertParameterValue(paramValue, paramType);
                 }
             }
 
-            // Invocation de la méthode avec les arguments
             return methodToFind.invoke(instance, args);
-
-        } catch (NoSuchMethodException e) {
-            throw new Exception("Méthode introuvable : " + mapping.getMethodName(), e);
-        } catch (InvocationTargetException e) {
-            throw new Exception("Erreur lors de l'exécution de la méthode : " + mapping.getMethodName(), e);
         } catch (Exception e) {
-            throw new Exception("Erreur lors de l'invocation du handler pour " + mapping.getClassName(), e);
+            throw new Exception("Erreur lors de l'invocation du handler", e);
         }
     }
 
