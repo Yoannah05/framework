@@ -3,10 +3,12 @@ package arch;
 import arch.annotation.FormField;
 import arch.annotation.Param;
 import arch.annotation.RequestParam;
+import arch.annotation.RestAPI;
 import arch.exception.FrameworkException;
 import arch.exception.UnknownResultTypeException;
 import arch.exception.UrlMappingNotFoundException;
 import arch.handler.ResultHandler;
+import arch.model.ModelView;
 import arch.registry.MappingRegistry;
 import arch.scanner.ControllerScanner;
 import arch.session.MySession;
@@ -21,10 +23,12 @@ import java.io.PrintWriter;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import com.google.gson.Gson;
 
 public class FrontController extends HttpServlet {
     private MappingRegistry mappingRegistry;
     private ResultHandler resultHandler;
+    private Gson gson;
 
     @Override
     public void init(ServletConfig config) throws ServletException {
@@ -33,7 +37,7 @@ public class FrontController extends HttpServlet {
 
         this.mappingRegistry = new MappingRegistry();
         this.resultHandler = new ResultHandler();
-
+        this.gson = new Gson();
         ControllerScanner scanner = new ControllerScanner(mappingRegistry, controllerPackage);
         scanner.scanControllers();
     }
@@ -59,11 +63,41 @@ public class FrontController extends HttpServlet {
             String requestURL = getRequestUrl(request);
             Mapping mapping = mappingRegistry.getMapping(requestURL);
             Object result = invokeHandler(mapping, request);
-            resultHandler.handleResult(result, request, response);
+
+            // Vérifier si la méthode est annotée avec @RestAPI
+            Method method = getMethod(mapping);
+            if (method.isAnnotationPresent(RestAPI.class)) {
+                handleRestAPIResponse(result, response);
+            } else {
+                resultHandler.handleResult(result, request, response);
+            }
         } catch (FrameworkException e) {
             handleFrameworkException(e, out);
         } catch (Exception e) {
             handleUnexpectedException(e, out);
+        }
+    }
+
+    private Method getMethod(Mapping mapping) throws Exception {
+        Class<?> clazz = Class.forName(mapping.getClassName());
+        for (Method method : clazz.getDeclaredMethods()) {
+            if (method.getName().equals(mapping.getMethodName())) {
+                return method;
+            }
+        }
+        throw new NoSuchMethodException("Method not found: " + mapping.getMethodName());
+    }
+
+    private void handleRestAPIResponse(Object result, HttpServletResponse response) throws IOException {
+        response.setContentType("application/json");
+        PrintWriter out = response.getWriter();
+
+        if (result instanceof ModelView) {
+            ModelView mv = (ModelView) result;
+            Object data = mv.getData();
+            out.println(gson.toJson(data));
+        } else {
+            out.println(gson.toJson(result));
         }
     }
 

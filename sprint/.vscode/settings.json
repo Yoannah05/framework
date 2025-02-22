@@ -1,8 +1,10 @@
 {
-    "java.project.sourcePaths": ["src"],
+    "java.project.sourcePaths": [
+        "src"
+    ],
     "java.project.outputPath": "bin",
     "java.project.referencedLibraries": [
-        "lib/**/*.jar",
+        "/home/yoannah/Documents/lib/gson-2.11.0.jar",
         "/opt/tomcat/lib/servlet-api.jar"
     ]
 }
