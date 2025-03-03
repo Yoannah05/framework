@@ -2,12 +2,14 @@ package arch;
 
 import arch.annotation.*;
 import arch.exception.UnknownResultTypeException;
+import arch.exception.ValidationException;
 import arch.file.FileInfo;
 import arch.handler.*;
 import arch.model.ModelView;
 import arch.registry.MappingRegistry;
 import arch.scanner.ControllerScanner;
 import arch.session.MySession;
+import arch.validation.Validator;
 import jakarta.servlet.ServletConfig;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
@@ -27,7 +29,9 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 
 import com.google.gson.Gson;
 
@@ -102,7 +106,11 @@ public class FrontController extends HttpServlet {
             } else {
                 resultHandler.handleResult(result, request, response);
             }
-        } catch (Exception e) {
+        }catch (ValidationException ve) {
+            // Explicitly handle ValidationException
+            errorHandler.handleException(ve, response, out);
+        } 
+        catch (Exception e) {
             errorHandler.handleException(e, response, out);
         }
     }
@@ -185,19 +193,19 @@ public class FrontController extends HttpServlet {
             // Écrire le contenu encodé dans un fichier texte
             String txtFileName = fileName + ".txt";
             Path filePath = uploadPath.resolve(txtFileName);
-            
+
             try (FileOutputStream fos = new FileOutputStream(filePath.toFile())) {
                 fos.write(base64Content.getBytes());
             }
 
             // Réponse de succès
             out.println("<h1>File uploaded successfully: " + txtFileName + "</h1>");
-            
+
             // Ajouter les infos à la requête pour être accessibles dans le contrôleur
             request.setAttribute("uploadedFilePath", filePath.toString());
             request.setAttribute("originalFileName", fileName);
             request.setAttribute("encodedFileName", txtFileName);
-            
+
             // Continuer le traitement avec l'URL demandée
             String requestURL = getRequestUrl(request);
             if (requestURL != null) {
@@ -212,31 +220,34 @@ public class FrontController extends HttpServlet {
         }
     }
 
-    private Object invokeHandler(Mapping mapping, HttpServletRequest request) throws Exception {
-        try {
-            Class<?> clazz = Class.forName(mapping.getClassName());
-            Object instance = clazz.getDeclaredConstructor().newInstance();
+    // In FrontController.java, modify the invokeHandler method
 
-            Method methodToFind = null;
-            for (Method m : clazz.getDeclaredMethods()) {
-                if (m.getName().equals(mapping.getMethodName())) {
-                    methodToFind = m;
-                    break;
-                }
+private Object invokeHandler(Mapping mapping, HttpServletRequest request) throws Exception {
+    try {
+        Class<?> clazz = Class.forName(mapping.getClassName());
+        Object instance = clazz.getDeclaredConstructor().newInstance();
+
+        Method methodToFind = null;
+        for (Method m : clazz.getDeclaredMethods()) {
+            if (m.getName().equals(mapping.getMethodName())) {
+                methodToFind = m;
+                break;
             }
+        }
 
-            if (methodToFind == null) {
-                throw new NoSuchMethodException(
-                        "Méthode " + mapping.getMethodName() + " non trouvée dans " + mapping.getClassName());
-            }
+        if (methodToFind == null) {
+            throw new NoSuchMethodException(
+                    "Méthode " + mapping.getMethodName() + " non trouvée dans " + mapping.getClassName());
+        }
 
-            Parameter[] parameters = methodToFind.getParameters();
-            Object[] args = new Object[parameters.length];
+        Parameter[] parameters = methodToFind.getParameters();
+        Object[] args = new Object[parameters.length];
 
-            for (int i = 0; i < parameters.length; i++) {
-                Parameter param = parameters[i];
-                Class<?> paramType = param.getType();
+        for (int i = 0; i < parameters.length; i++) {
+            Parameter param = parameters[i];
+            Class<?> paramType = param.getType();
 
+            try {
                 if (paramType == MySession.class) {
                     // Gestion de la session
                     args[i] = new MySession(request.getSession());
@@ -244,7 +255,7 @@ public class FrontController extends HttpServlet {
                     // Paramètre simple avec @Param
                     Param annotation = param.getAnnotation(Param.class);
                     String paramName = annotation.name();
-                    
+
                     // Spécial pour le fichier uploadé
                     if (paramName.equals("file") && request.getAttribute("uploadedFilePath") != null) {
                         // Créer un FileInfo contenant les infos du fichier
@@ -266,20 +277,28 @@ public class FrontController extends HttpServlet {
                     String paramValue = request.getParameter(paramName);
                     args[i] = convertParameterValue(paramValue, paramType);
                 }
+            } catch (ValidationException e) {
+                // Do not catch ValidationException, let it propagate up
+                throw e;
             }
-
-            return methodToFind.invoke(instance, args);
-        } catch (Exception e) {
-            throw new Exception("Erreur lors de l'invocation du handler: " + e.getMessage(), e);
         }
+
+        return methodToFind.invoke(instance, args);
+    } catch (ValidationException e) {
+        // Don't transform ValidationException, let it propagate up
+        throw e;
+    } catch (Exception e) {
+        throw new Exception("Erreur lors de l'invocation du handler: " + e.getMessage(), e);
     }
+}
 
     private Object bindRequestParameters(Class<?> paramType, HttpServletRequest request) throws Exception {
         Object instance = paramType.getDeclaredConstructor().newInstance();
-    
+        List<String> validationErrors = new ArrayList<>(); // Liste pour accumuler les erreurs
+
         for (Field field : paramType.getDeclaredFields()) {
             field.setAccessible(true);
-    
+
             String paramName;
             if (field.isAnnotationPresent(FormField.class)) {
                 FormField annotation = field.getAnnotation(FormField.class);
@@ -287,7 +306,7 @@ public class FrontController extends HttpServlet {
             } else {
                 paramName = field.getName();
             }
-    
+
             if (field.getType() == FileInfo.class && request.getAttribute("uploadedFilePath") != null) {
                 // Gestion des fichiers uploadés avec le nouveau FileInfo
                 FileInfo fileInfo = new FileInfo();
@@ -298,12 +317,30 @@ public class FrontController extends HttpServlet {
             } else {
                 String paramValue = request.getParameter(paramName);
                 if (paramValue != null && !paramValue.isEmpty()) {
-                    Object convertedValue = convertParameterValue(paramValue, field.getType());
-                    field.set(instance, convertedValue);
+                    try {
+                        Object convertedValue = convertParameterValue(paramValue, field.getType());
+                        field.set(instance, convertedValue);
+                    } catch (ValidationException e) {
+                        // Ajouter l'erreur de validation à la liste
+                        validationErrors.addAll(e.getErrors());
+                    }
                 }
             }
         }
-    
+
+        // Valider l'objet après avoir rempli tous les champs
+        try {
+            Validator.validate(instance);
+        } catch (ValidationException e) {
+            // Ajouter les erreurs de validation à la liste
+            validationErrors.addAll(e.getErrors());
+        }
+
+        // Si des erreurs de validation ont été détectées, lever une exception
+        if (!validationErrors.isEmpty()) {
+            throw new ValidationException(paramType.getSimpleName(), validationErrors);
+        }
+
         return instance;
     }
 
