@@ -4,9 +4,8 @@ import arch.annotation.FormField;
 import arch.annotation.Param;
 import arch.annotation.RequestParam;
 import arch.annotation.RestAPI;
-import arch.exception.FrameworkException;
 import arch.exception.UnknownResultTypeException;
-import arch.exception.UrlMappingNotFoundException;
+import arch.handler.ErrorHandler;
 import arch.handler.ResultHandler;
 import arch.model.ModelView;
 import arch.registry.MappingRegistry;
@@ -28,6 +27,7 @@ import com.google.gson.Gson;
 public class FrontController extends HttpServlet {
     private MappingRegistry mappingRegistry;
     private ResultHandler resultHandler;
+    private ErrorHandler errorHandler;
     private Gson gson;
 
     @Override
@@ -37,24 +37,30 @@ public class FrontController extends HttpServlet {
 
         this.mappingRegistry = new MappingRegistry();
         this.resultHandler = new ResultHandler();
+        this.errorHandler = new ErrorHandler(mappingRegistry);
         this.gson = new Gson();
-        ControllerScanner scanner = new ControllerScanner(mappingRegistry, controllerPackage);
-        scanner.scanControllers();
+        
+        try {
+            ControllerScanner scanner = new ControllerScanner(mappingRegistry, controllerPackage);
+            scanner.scanControllers();
+        } catch (Exception e) {
+            log("Erreur lors de l'initialisation du ControllerScanner", e);
+        }
     }
 
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
-        processRequest(request, response);
+        processRequest(request, response, "GET");
     }
 
     @Override
     protected void doPost(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
-        processRequest(request, response);
+        processRequest(request, response, "POST");
     }
 
-    protected void processRequest(HttpServletRequest request, HttpServletResponse response)
+    protected void processRequest(HttpServletRequest request, HttpServletResponse response, String httpMethod)
             throws ServletException, IOException {
         response.setContentType("text/html");
         PrintWriter out = response.getWriter();
@@ -62,6 +68,15 @@ public class FrontController extends HttpServlet {
         try {
             String requestURL = getRequestUrl(request);
             Mapping mapping = mappingRegistry.getMapping(requestURL);
+            
+            // Check if the HTTP method matches
+            if (!httpMethod.equals(mapping.getVerb())) {
+                Exception e = new IllegalArgumentException(
+                    "L'endpoint " + requestURL + " ne supporte pas la méthode " + httpMethod);
+                errorHandler.handleException(e, response, out);
+                return;
+            }
+            
             Object result = invokeHandler(mapping, request);
 
             // Vérifier si la méthode est annotée avec @RestAPI
@@ -71,10 +86,8 @@ public class FrontController extends HttpServlet {
             } else {
                 resultHandler.handleResult(result, request, response);
             }
-        } catch (FrameworkException e) {
-            handleFrameworkException(e, out);
         } catch (Exception e) {
-            handleUnexpectedException(e, out);
+            errorHandler.handleException(e, response, out);
         }
     }
 
@@ -161,7 +174,7 @@ public class FrontController extends HttpServlet {
 
             return methodToFind.invoke(instance, args);
         } catch (Exception e) {
-            throw new Exception("Erreur lors de l'invocation du handler", e);
+            throw new Exception("Erreur lors de l'invocation du handler: " + e.getMessage(), e);
         }
     }
 
@@ -207,18 +220,6 @@ public class FrontController extends HttpServlet {
             return Float.parseFloat(value);
         }
 
-        throw new UnknownResultTypeException("Unsupported parameter type: " + type.getName());
-    }
-
-    private void handleFrameworkException(FrameworkException e, PrintWriter out) {
-        out.println("Framework Error: " + e.getMessage());
-        if (e instanceof UrlMappingNotFoundException) {
-            out.println("Available mappings: " + mappingRegistry.getRegisteredUrls());
-        }
-    }
-
-    private void handleUnexpectedException(Exception e, PrintWriter out) {
-        out.println("Internal Server Error: " + e.getMessage());
-        e.printStackTrace(out);
+        throw new UnknownResultTypeException("Type de paramètre non supporté: " + type.getName());
     }
 }
