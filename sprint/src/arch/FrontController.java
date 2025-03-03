@@ -45,16 +45,16 @@ public class FrontController extends HttpServlet {
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
-        processRequest(request, response);
+        processRequest(request, response, "GET");
     }
 
     @Override
     protected void doPost(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
-        processRequest(request, response);
+        processRequest(request, response, "POST");
     }
 
-    protected void processRequest(HttpServletRequest request, HttpServletResponse response)
+    protected void processRequest(HttpServletRequest request, HttpServletResponse response, String httpMethod)
             throws ServletException, IOException {
         response.setContentType("text/html");
         PrintWriter out = response.getWriter();
@@ -62,6 +62,13 @@ public class FrontController extends HttpServlet {
         try {
             String requestURL = getRequestUrl(request);
             Mapping mapping = mappingRegistry.getMapping(requestURL);
+            
+            // Check if the HTTP method matches
+            if (!httpMethod.equals(mapping.getVerb())) {
+                throw new Exception(
+                    "The endpoint " + requestURL + " does not support " + httpMethod + " method");
+            }
+            
             Object result = invokeHandler(mapping, request);
 
             // Vérifier si la méthode est annotée avec @RestAPI

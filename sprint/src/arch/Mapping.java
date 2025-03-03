@@ -3,6 +3,15 @@ package arch;
 public class Mapping {
     private String className;
     private String methodName;
+    private String verb;
+
+    public String getVerb() {
+        return verb;
+    }
+
+    public void setVerb(String verb) {
+        this.verb = verb;
+    }
 
     public Mapping(String className, String methodName) {
         this.className = className;

@@ -2,6 +2,7 @@ package arch.scanner;
 
 import arch.annotation.Controller;
 import arch.annotation.GET;
+import arch.annotation.POST;
 import arch.exception.PackageNotFoundException;
 import arch.Mapping;
 import arch.registry.MappingRegistry;
@@ -36,10 +37,22 @@ public class ControllerScanner {
     private void scanController(Class<?> clazz) {
         if (clazz.isAnnotationPresent(Controller.class)) {
             for (Method method : clazz.getDeclaredMethods()) {
+                // Register GET methods
                 if (method.isAnnotationPresent(GET.class)) {
                     GET getAnnotation = method.getAnnotation(GET.class);
                     String url = getAnnotation.value();
-                    mappingRegistry.registerMapping(url, new Mapping(clazz.getName(), method.getName()));
+                    Mapping mapping = new Mapping(clazz.getName(), method.getName());
+                    mapping.setVerb("GET");
+                    mappingRegistry.registerMapping(url, mapping);
+                }
+                
+                // Register POST methods
+                if (method.isAnnotationPresent(POST.class)) {
+                    POST postAnnotation = method.getAnnotation(POST.class);
+                    String url = postAnnotation.value();
+                    Mapping mapping = new Mapping(clazz.getName(), method.getName());
+                    mapping.setVerb("POST");
+                    mappingRegistry.registerMapping(url, mapping);
                 }
             }
         }
