@@ -3,6 +3,7 @@ package arch.handler;
 import arch.exception.FrameworkException;
 import arch.exception.PackageNotFoundException;
 import arch.exception.UrlMappingNotFoundException;
+import arch.exception.ValidationException;
 import arch.exception.UnknownResultTypeException;
 import arch.registry.MappingRegistry;
 
@@ -56,7 +57,9 @@ public class ErrorHandler {
     public void handleException(Exception e, HttpServletResponse response, PrintWriter out) {
         int statusCode = determineStatusCode(e);
         response.setStatus(statusCode);
-        
+        if (e instanceof ValidationException) {
+            handleValidationException(e, out);
+        }
         if (statusCode == HttpServletResponse.SC_BAD_REQUEST) {
             handleBadRequestException(e, out);
         } else if (statusCode == HttpServletResponse.SC_NOT_FOUND) {
@@ -65,7 +68,16 @@ public class ErrorHandler {
             handleInternalServerError(e, out);
         }
     }
-    
+    public void handleValidationException(Exception e, PrintWriter out) {
+        ValidationException ve = (ValidationException) e;
+        out.println("<h1>Validation Error</h1>");
+        out.println("<h2>Form: " + ve.getFormName() + "</h2>");
+        out.println("<ul>");
+        for (String error : ve.getErrors()) {
+            out.println("<li>" + error + "</li>");
+        }
+        out.println("</ul>");
+    }
     /**
      * Détermine le code de statut HTTP en fonction du type d'exception.
      * 
