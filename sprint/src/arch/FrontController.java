@@ -1,12 +1,9 @@
 package arch;
 
-import arch.annotation.FormField;
-import arch.annotation.Param;
-import arch.annotation.RequestParam;
-import arch.annotation.RestAPI;
+import arch.annotation.*;
 import arch.exception.UnknownResultTypeException;
-import arch.handler.ErrorHandler;
-import arch.handler.ResultHandler;
+import arch.file.FileInfo;
+import arch.handler.*;
 import arch.model.ModelView;
 import arch.registry.MappingRegistry;
 import arch.scanner.ControllerScanner;
@@ -16,14 +13,28 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.annotation.MultipartConfig;
 
+import java.io.ByteArrayOutputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import jakarta.servlet.http.Part;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Base64;
+
 import com.google.gson.Gson;
 
+@MultipartConfig(fileSizeThreshold = 1024 * 1024 * 1, // 1 MB
+        maxFileSize = 1024 * 1024 * 10, // 10 MB
+        maxRequestSize = 1024 * 1024 * 100 // 100 MB
+)
 public class FrontController extends HttpServlet {
     private MappingRegistry mappingRegistry;
     private ResultHandler resultHandler;
@@ -39,7 +50,7 @@ public class FrontController extends HttpServlet {
         this.resultHandler = new ResultHandler();
         this.errorHandler = new ErrorHandler(mappingRegistry);
         this.gson = new Gson();
-        
+
         try {
             ControllerScanner scanner = new ControllerScanner(mappingRegistry, controllerPackage);
             scanner.scanControllers();
@@ -66,17 +77,22 @@ public class FrontController extends HttpServlet {
         PrintWriter out = response.getWriter();
 
         try {
+            if (request.getContentType() != null && request.getContentType().startsWith("multipart/form-data")) {
+                handleFileUpload(request, response);
+                return;
+            }
+
             String requestURL = getRequestUrl(request);
             Mapping mapping = mappingRegistry.getMapping(requestURL);
-            
+
             // Check if the HTTP method matches
             if (!httpMethod.equals(mapping.getVerb())) {
                 Exception e = new IllegalArgumentException(
-                    "L'endpoint " + requestURL + " ne supporte pas la méthode " + httpMethod);
+                        "L'endpoint " + requestURL + " ne supporte pas la méthode " + httpMethod);
                 errorHandler.handleException(e, response, out);
                 return;
             }
-            
+
             Object result = invokeHandler(mapping, request);
 
             // Vérifier si la méthode est annotée avec @RestAPI
@@ -127,6 +143,75 @@ public class FrontController extends HttpServlet {
         return requestURL;
     }
 
+    private void handleFileUpload(HttpServletRequest request, HttpServletResponse response)
+            throws IOException, ServletException {
+        response.setContentType("text/html");
+        PrintWriter out = response.getWriter();
+
+        try {
+            // Récupérer le fichier uploadé
+            Part filePart = request.getPart("file"); // "file" est le nom du champ dans le formulaire
+            String fileName = Paths.get(filePart.getSubmittedFileName()).getFileName().toString(); // Nom du fichier
+
+            // Extraire le nom de l'utilisateur depuis la session (si disponible)
+            String username = "default";
+            if (request.getSession().getAttribute("user") != null) {
+                username = request.getSession().getAttribute("user").toString();
+            }
+
+            // Chemin où stocker le fichier
+            String uploadDir = System.getProperty("user.dir") + "/uploads/" + username;
+            Path uploadPath = Paths.get(uploadDir);
+
+            // Créer le dossier s'il n'existe pas
+            if (!Files.exists(uploadPath)) {
+                Files.createDirectories(uploadPath);
+            }
+
+            // Lire les données binaires du fichier
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            try (InputStream fileContent = filePart.getInputStream()) {
+                byte[] data = new byte[16384]; // buffer de 16 KB
+                int bytesRead;
+                while ((bytesRead = fileContent.read(data, 0, data.length)) != -1) {
+                    buffer.write(data, 0, bytesRead);
+                }
+            }
+            byte[] fileBytes = buffer.toByteArray();
+
+            // Convertir les données binaires en Base64 pour stockage texte
+            String base64Content = Base64.getEncoder().encodeToString(fileBytes);
+
+            // Écrire le contenu encodé dans un fichier texte
+            String txtFileName = fileName + ".txt";
+            Path filePath = uploadPath.resolve(txtFileName);
+            
+            try (FileOutputStream fos = new FileOutputStream(filePath.toFile())) {
+                fos.write(base64Content.getBytes());
+            }
+
+            // Réponse de succès
+            out.println("<h1>File uploaded successfully: " + txtFileName + "</h1>");
+            
+            // Ajouter les infos à la requête pour être accessibles dans le contrôleur
+            request.setAttribute("uploadedFilePath", filePath.toString());
+            request.setAttribute("originalFileName", fileName);
+            request.setAttribute("encodedFileName", txtFileName);
+            
+            // Continuer le traitement avec l'URL demandée
+            String requestURL = getRequestUrl(request);
+            if (requestURL != null) {
+                Mapping mapping = mappingRegistry.getMapping(requestURL);
+                Object result = invokeHandler(mapping, request);
+                resultHandler.handleResult(result, request, response);
+            }
+        } catch (Exception e) {
+            // Gestion des erreurs
+            out.println("<h1>Error uploading file: " + e.getMessage() + "</h1>");
+            e.printStackTrace(out);
+        }
+    }
+
     private Object invokeHandler(Mapping mapping, HttpServletRequest request) throws Exception {
         try {
             Class<?> clazz = Class.forName(mapping.getClassName());
@@ -159,8 +244,19 @@ public class FrontController extends HttpServlet {
                     // Paramètre simple avec @Param
                     Param annotation = param.getAnnotation(Param.class);
                     String paramName = annotation.name();
-                    String paramValue = request.getParameter(paramName);
-                    args[i] = convertParameterValue(paramValue, paramType);
+                    
+                    // Spécial pour le fichier uploadé
+                    if (paramName.equals("file") && request.getAttribute("uploadedFilePath") != null) {
+                        // Créer un FileInfo contenant les infos du fichier
+                        FileInfo fileInfo = new FileInfo();
+                        fileInfo.setOriginalName(request.getAttribute("originalFileName").toString());
+                        fileInfo.setEncodedPath(request.getAttribute("uploadedFilePath").toString());
+                        fileInfo.setEncodedFileName(request.getAttribute("encodedFileName").toString());
+                        args[i] = fileInfo;
+                    } else {
+                        String paramValue = request.getParameter(paramName);
+                        args[i] = convertParameterValue(paramValue, paramType);
+                    }
                 } else if (param.isAnnotationPresent(RequestParam.class)) {
                     // Objet complexe avec @RequestParam
                     args[i] = bindRequestParameters(paramType, request);
@@ -180,10 +276,10 @@ public class FrontController extends HttpServlet {
 
     private Object bindRequestParameters(Class<?> paramType, HttpServletRequest request) throws Exception {
         Object instance = paramType.getDeclaredConstructor().newInstance();
-
+    
         for (Field field : paramType.getDeclaredFields()) {
             field.setAccessible(true);
-
+    
             String paramName;
             if (field.isAnnotationPresent(FormField.class)) {
                 FormField annotation = field.getAnnotation(FormField.class);
@@ -191,14 +287,23 @@ public class FrontController extends HttpServlet {
             } else {
                 paramName = field.getName();
             }
-
-            String paramValue = request.getParameter(paramName);
-            if (paramValue != null && !paramValue.isEmpty()) {
-                Object convertedValue = convertParameterValue(paramValue, field.getType());
-                field.set(instance, convertedValue);
+    
+            if (field.getType() == FileInfo.class && request.getAttribute("uploadedFilePath") != null) {
+                // Gestion des fichiers uploadés avec le nouveau FileInfo
+                FileInfo fileInfo = new FileInfo();
+                fileInfo.setOriginalName(request.getAttribute("originalFileName").toString());
+                fileInfo.setEncodedPath(request.getAttribute("uploadedFilePath").toString());
+                fileInfo.setEncodedFileName(request.getAttribute("encodedFileName").toString());
+                field.set(instance, fileInfo);
+            } else {
+                String paramValue = request.getParameter(paramName);
+                if (paramValue != null && !paramValue.isEmpty()) {
+                    Object convertedValue = convertParameterValue(paramValue, field.getType());
+                    field.set(instance, convertedValue);
+                }
             }
         }
-
+    
         return instance;
     }
 
