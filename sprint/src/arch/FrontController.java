@@ -106,11 +106,10 @@ public class FrontController extends HttpServlet {
             } else {
                 resultHandler.handleResult(result, request, response);
             }
-        }catch (ValidationException ve) {
-            // Explicitly handle ValidationException
-            errorHandler.handleException(ve, response, out);
-        } 
-        catch (Exception e) {
+        } catch (ValidationException ve) {
+            // Gérer la validation d'une manière personnalisée
+            errorHandler.handleValidationException(ve, request, response);
+        } catch (Exception e) {
             errorHandler.handleException(e, response, out);
         }
     }
