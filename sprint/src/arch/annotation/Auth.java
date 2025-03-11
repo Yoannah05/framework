@@ -11,7 +11,7 @@ import java.lang.annotation.Target;
  * If roles are specified, both authentication and appropriate role are required.
  */
 @Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.METHOD)
+@Target({ElementType.METHOD, ElementType.TYPE})
 public @interface Auth {
     /**
      * List of roles that are allowed to access the annotated method.
