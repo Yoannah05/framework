@@ -39,8 +39,22 @@ public class ResultHandler {
             HttpServletResponse response) throws ServletException, IOException {
         String url = resolveViewPath(modelView.getUrl());
 
+        // Ajouter les données du modèle
         for (Map.Entry<String, Object> entry : modelView.getData().entrySet()) {
             request.setAttribute(entry.getKey(), entry.getValue());
+        }
+
+        // Ajouter les données du formulaire et les erreurs
+        if (modelView.getFormData() != null) {
+            for (Map.Entry<String, ModelView.FieldData> entry : modelView.getFormData().entrySet()) {
+                // Ajouter la valeur du champ
+                request.setAttribute(entry.getKey() + "_value", entry.getValue().getValue());
+                
+                // Ajouter l'erreur du champ si elle existe
+                if (entry.getValue().getError() != null) {
+                    request.setAttribute(entry.getKey() + "_error", entry.getValue().getError());
+                }
+            }
         }
 
         request.getRequestDispatcher(url).forward(request, response);
