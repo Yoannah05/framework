@@ -1,6 +1,7 @@
 package arch;
 
 import arch.annotation.*;
+import arch.exception.AuthorizationException;
 import arch.exception.UnknownResultTypeException;
 import arch.exception.ValidationException;
 import arch.file.FileInfo;
@@ -107,8 +108,11 @@ public class FrontController extends HttpServlet {
                 resultHandler.handleResult(result, request, response);
             }
         } catch (ValidationException ve) {
-            // Gérer la validation d'une manière personnalisée
-            errorHandler.handleValidationException(ve, request, response);
+            // Explicitly handle ValidationException
+            errorHandler.handleException(ve, response, out);
+        } catch (AuthorizationException ae) {
+            // Handle authorization exceptions
+            errorHandler.handleException(ae, response, out);
         } catch (Exception e) {
             errorHandler.handleException(e, response, out);
         }
@@ -219,77 +223,109 @@ public class FrontController extends HttpServlet {
         }
     }
 
-    // In FrontController.java, modify the invokeHandler method
+    private Object invokeHandler(Mapping mapping, HttpServletRequest request) throws Exception {
+        try {
+            Class<?> clazz = Class.forName(mapping.getClassName());
+            Object instance = clazz.getDeclaredConstructor().newInstance();
 
-private Object invokeHandler(Mapping mapping, HttpServletRequest request) throws Exception {
-    try {
-        Class<?> clazz = Class.forName(mapping.getClassName());
-        Object instance = clazz.getDeclaredConstructor().newInstance();
-
-        Method methodToFind = null;
-        for (Method m : clazz.getDeclaredMethods()) {
-            if (m.getName().equals(mapping.getMethodName())) {
-                methodToFind = m;
-                break;
+            Method methodToFind = null;
+            for (Method m : clazz.getDeclaredMethods()) {
+                if (m.getName().equals(mapping.getMethodName())) {
+                    methodToFind = m;
+                    break;
+                }
             }
-        }
 
-        if (methodToFind == null) {
-            throw new NoSuchMethodException(
-                    "Méthode " + mapping.getMethodName() + " non trouvée dans " + mapping.getClassName());
-        }
+            if (methodToFind == null) {
+                throw new NoSuchMethodException(
+                        "Méthode " + mapping.getMethodName() + " non trouvée dans " + mapping.getClassName());
+            }
 
-        Parameter[] parameters = methodToFind.getParameters();
-        Object[] args = new Object[parameters.length];
+            // Check for @Auth annotation and handle authorization
+            if (methodToFind.isAnnotationPresent(Auth.class)) {
+                Auth authAnnotation = methodToFind.getAnnotation(Auth.class);
+                // Get authentication status from session
+                Boolean isAuthenticated = (Boolean) request.getSession().getAttribute("auth");
 
-        for (int i = 0; i < parameters.length; i++) {
-            Parameter param = parameters[i];
-            Class<?> paramType = param.getType();
+                // Check if user is authenticated
+                if (isAuthenticated == null || !isAuthenticated) {
+                    throw new AuthorizationException("L'utilisation de cette méthode nécessite une autorisation");
+                }
 
-            try {
-                if (paramType == MySession.class) {
-                    // Gestion de la session
-                    args[i] = new MySession(request.getSession());
-                } else if (param.isAnnotationPresent(Param.class)) {
-                    // Paramètre simple avec @Param
-                    Param annotation = param.getAnnotation(Param.class);
-                    String paramName = annotation.name();
+                // If roles are specified in the annotation, check user's role
+                String[] requiredRoles = authAnnotation.roles();
+                if (requiredRoles.length > 0) {
+                    String userRole = (String) request.getSession().getAttribute("role");
 
-                    // Spécial pour le fichier uploadé
-                    if (paramName.equals("file") && request.getAttribute("uploadedFilePath") != null) {
-                        // Créer un FileInfo contenant les infos du fichier
-                        FileInfo fileInfo = new FileInfo();
-                        fileInfo.setOriginalName(request.getAttribute("originalFileName").toString());
-                        fileInfo.setEncodedPath(request.getAttribute("uploadedFilePath").toString());
-                        fileInfo.setEncodedFileName(request.getAttribute("encodedFileName").toString());
-                        args[i] = fileInfo;
+                    // Check if user's role matches any of the required roles
+                    boolean hasPermission = false;
+                    for (String role : requiredRoles) {
+                        if (role.equals(userRole)) {
+                            hasPermission = true;
+                            break;
+                        }
+                    }
+
+                    if (!hasPermission) {
+                        throw new AuthorizationException("Rôle non autorisé pour l'utilisation de cette méthode");
+                    }
+                }
+            }
+
+            Parameter[] parameters = methodToFind.getParameters();
+            Object[] args = new Object[parameters.length];
+
+            for (int i = 0; i < parameters.length; i++) {
+                Parameter param = parameters[i];
+                Class<?> paramType = param.getType();
+
+                try {
+                    if (paramType == MySession.class) {
+                        // Gestion de la session
+                        args[i] = new MySession(request.getSession());
+                    } else if (param.isAnnotationPresent(Param.class)) {
+                        // Paramètre simple avec @Param
+                        Param annotation = param.getAnnotation(Param.class);
+                        String paramName = annotation.name();
+
+                        // Spécial pour le fichier uploadé
+                        if (paramName.equals("file") && request.getAttribute("uploadedFilePath") != null) {
+                            // Créer un FileInfo contenant les infos du fichier
+                            FileInfo fileInfo = new FileInfo();
+                            fileInfo.setOriginalName(request.getAttribute("originalFileName").toString());
+                            fileInfo.setEncodedPath(request.getAttribute("uploadedFilePath").toString());
+                            fileInfo.setEncodedFileName(request.getAttribute("encodedFileName").toString());
+                            args[i] = fileInfo;
+                        } else {
+                            String paramValue = request.getParameter(paramName);
+                            args[i] = convertParameterValue(paramValue, paramType);
+                        }
+                    } else if (param.isAnnotationPresent(RequestParam.class)) {
+                        // Objet complexe avec @RequestParam
+                        args[i] = bindRequestParameters(paramType, request);
                     } else {
+                        // Paramètre sans annotation
+                        String paramName = param.getName();
                         String paramValue = request.getParameter(paramName);
                         args[i] = convertParameterValue(paramValue, paramType);
                     }
-                } else if (param.isAnnotationPresent(RequestParam.class)) {
-                    // Objet complexe avec @RequestParam
-                    args[i] = bindRequestParameters(paramType, request);
-                } else {
-                    // Paramètre sans annotation
-                    String paramName = param.getName();
-                    String paramValue = request.getParameter(paramName);
-                    args[i] = convertParameterValue(paramValue, paramType);
+                } catch (ValidationException e) {
+                    // Do not catch ValidationException, let it propagate up
+                    throw e;
                 }
-            } catch (ValidationException e) {
-                // Do not catch ValidationException, let it propagate up
-                throw e;
             }
-        }
 
-        return methodToFind.invoke(instance, args);
-    } catch (ValidationException e) {
-        // Don't transform ValidationException, let it propagate up
-        throw e;
-    } catch (Exception e) {
-        throw new Exception("Erreur lors de l'invocation du handler: " + e.getMessage(), e);
+            return methodToFind.invoke(instance, args);
+        } catch (ValidationException e) {
+            // Don't transform ValidationException, let it propagate up
+            throw e;
+        } catch (AuthorizationException e) {
+            // Don't transform AuthorizationException either
+            throw e;
+        } catch (Exception e) {
+            throw new Exception("Erreur lors de l'invocation du handler: " + e.getMessage(), e);
+        }
     }
-}
 
     private Object bindRequestParameters(Class<?> paramType, HttpServletRequest request) throws Exception {
         Object instance = paramType.getDeclaredConstructor().newInstance();
