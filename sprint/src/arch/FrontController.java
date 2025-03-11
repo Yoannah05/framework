@@ -227,7 +227,7 @@ public class FrontController extends HttpServlet {
         try {
             Class<?> clazz = Class.forName(mapping.getClassName());
             Object instance = clazz.getDeclaredConstructor().newInstance();
-
+    
             Method methodToFind = null;
             for (Method m : clazz.getDeclaredMethods()) {
                 if (m.getName().equals(mapping.getMethodName())) {
@@ -235,28 +235,44 @@ public class FrontController extends HttpServlet {
                     break;
                 }
             }
-
+    
             if (methodToFind == null) {
                 throw new NoSuchMethodException(
                         "Méthode " + mapping.getMethodName() + " non trouvée dans " + mapping.getClassName());
             }
-
-            // Check for @Auth annotation and handle authorization
+            
+            // Check for @Auth annotation at both class and method levels
+            boolean requiresAuth = false;
+            String[] requiredRoles = new String[0];
+            
+            // First check class-level annotation
+            if (clazz.isAnnotationPresent(Auth.class)) {
+                requiresAuth = true;
+                Auth authAnnotation = clazz.getAnnotation(Auth.class);
+                requiredRoles = authAnnotation.roles();
+            }
+            
+            // Method-level annotation overrides class-level if present
             if (methodToFind.isAnnotationPresent(Auth.class)) {
+                requiresAuth = true;
                 Auth authAnnotation = methodToFind.getAnnotation(Auth.class);
+                requiredRoles = authAnnotation.roles(); // Override class-level roles
+            }
+            
+            // Perform authorization check if required
+            if (requiresAuth) {
                 // Get authentication status from session
                 Boolean isAuthenticated = (Boolean) request.getSession().getAttribute("auth");
-
+                
                 // Check if user is authenticated
                 if (isAuthenticated == null || !isAuthenticated) {
                     throw new AuthorizationException("L'utilisation de cette méthode nécessite une autorisation");
                 }
-
-                // If roles are specified in the annotation, check user's role
-                String[] requiredRoles = authAnnotation.roles();
+                
+                // If roles are specified, check user's role
                 if (requiredRoles.length > 0) {
                     String userRole = (String) request.getSession().getAttribute("role");
-
+                    
                     // Check if user's role matches any of the required roles
                     boolean hasPermission = false;
                     for (String role : requiredRoles) {
@@ -265,20 +281,21 @@ public class FrontController extends HttpServlet {
                             break;
                         }
                     }
-
+                    
                     if (!hasPermission) {
                         throw new AuthorizationException("Rôle non autorisé pour l'utilisation de cette méthode");
                     }
                 }
             }
-
+    
             Parameter[] parameters = methodToFind.getParameters();
             Object[] args = new Object[parameters.length];
-
+    
+            // ... (rest of the method remains the same)
             for (int i = 0; i < parameters.length; i++) {
                 Parameter param = parameters[i];
                 Class<?> paramType = param.getType();
-
+    
                 try {
                     if (paramType == MySession.class) {
                         // Gestion de la session
@@ -287,7 +304,7 @@ public class FrontController extends HttpServlet {
                         // Paramètre simple avec @Param
                         Param annotation = param.getAnnotation(Param.class);
                         String paramName = annotation.name();
-
+    
                         // Spécial pour le fichier uploadé
                         if (paramName.equals("file") && request.getAttribute("uploadedFilePath") != null) {
                             // Créer un FileInfo contenant les infos du fichier
@@ -314,7 +331,7 @@ public class FrontController extends HttpServlet {
                     throw e;
                 }
             }
-
+    
             return methodToFind.invoke(instance, args);
         } catch (ValidationException e) {
             // Don't transform ValidationException, let it propagate up
